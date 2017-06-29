@@ -1,22 +1,30 @@
 #!/usr/bin/python
 # coding=utf-8
-import os
 
-import xlrd as xlrd
-import csv
-import logging
+import os
+import sys
+import urllib2
 import subprocess
+import logging
+import json
+import csv
+import xlrd
+import redis
+
+#####################################################################
+#  使用方式：python push_es.py ${data_path} ${feature_group_name}     #
+#  默认的feature_key为数据文件的第一行的第一列的列名                       #
+#  若要指定feature_key, 可以加在最后一个参数                             #
+#####################################################################
 
 __author__ = 'luxiaolang'
-
-import sys
-import json
-import urllib2
 
 CONVERT_TO_CSV = True
 ZOOTOPIA_URL = "http://vpca-bdi-zootopia-mgr-1.vm.elenet.me:8080"
 ES_PORT = "9200"
 KEY_NAME = "feature_key"
+REDIS_PIPE_BATCH_SIZE = 10000
+REDIS_DEFAULT_TTL = 891200
 
 
 def excel_to_csv(excel_file):
@@ -73,10 +81,21 @@ def get_datasource_info(id):
 
 def get_columns(data_path):
     # 数据文件第一行为表的列
-    return open(data_path).readline().strip("\n").split(",")
+    return open(data_path).readline().strip().split(",")
 
 
-def generate_es_config(data_path, columns, index, type, key_name, host, port):
+def get_feature_key_index(columns, key_name):
+    for i, col in enumerate(columns):
+        if col == key_name:
+            return i
+    raise RuntimeError("Cannot find feature_key named " + key_name)
+
+
+def gen_redis_field_value_mapping(columns, feature_values):
+    return {columns[i]: feature_values[i] for i, col in enumerate(columns)}
+
+
+def gen_es_config(data_path, columns, index, type, key_name, host, port):
     config = """
         input {{
             file {{
@@ -109,33 +128,59 @@ def generate_es_config(data_path, columns, index, type, key_name, host, port):
 
 def push_data(data_path, feature_group_name, columns, key_name):
     feature_group = get_feature_group_info(feature_group_name)
-    datasource_info = get_datasource_info(feature_group["sourceId"])
-    for datasource in datasource_info:
-        source_type = datasource["type"]
-        url = datasource["url"].split(":")
+    source_info = get_datasource_info(feature_group["sourceId"])
+    for data_source in source_info:
+        source_type = data_source["type"]
+        namespace = feature_group["extra"]["index"]
+        sub_namespace = feature_group["extra"]["type"]
+        ttl = feature_group["extra"].get("ttl", REDIS_DEFAULT_TTL)
+        url = data_source["url"].split(":")
         host = url[0]
+        port = url[1]
 
         if source_type == "elasticsearch":
-            es_index = feature_group["extra"]["index"]
-            es_type = feature_group["extra"]["type"]
-            es_config = generate_es_config(data_path, columns, es_index, es_type, key_name, host, ES_PORT)
-
-            print "starting push data to es..."
-            exec_cmd(es_config)
+            do_push_es(data_path, columns, namespace, sub_namespace, key_name, host, ES_PORT)
         elif source_type == "redis":
-            print "datasource is redis, skip"
+            do_push_redis(data_path, columns, namespace, sub_namespace, key_name, host, port, ttl)
 
 
-def exec_cmd(cmd):
-    # cmd = cmd.replace("\"", "")
-    cmd = 'logstash -e "%s"' % cmd
-    print cmd
-    code = subprocess.call(cmd, shell=True)
+def do_push_es(data_path, columns, namespace, sub_namespace, key_name, host, port):
+    logstash_config = gen_es_config(data_path, columns, namespace, sub_namespace, key_name, host, port)
+    sh_cmd = 'logstash -e "%s"' % logstash_config
+    print sh_cmd
+
+    print "Push data to es start..."
+    code = subprocess.call(sh_cmd, shell=True)
     if code != 0:
-        logging.info("Error while executing shell command " + cmd)
-        raise RuntimeError("Error while executing shell command" + cmd)
+        logging.info("Error while executing shell command " + sh_cmd)
+        raise RuntimeError("Error while executing shell command" + sh_cmd)
     else:
-        logging.info("push data succeed!")
+        print "Push data to es succeed!\n"
+
+
+def do_push_redis(data_path, columns, namespace, sub_namespace, key_name, host, port, ttl=REDIS_DEFAULT_TTL):
+    conn = redis.Redis(host=host, port=port)
+    pipe = conn.pipeline()
+    redis_key_prefix = namespace + ":" + sub_namespace + ":"
+    key_index = get_feature_key_index(columns, key_name)
+
+    print "Push data to redis start..."
+    with open(data_path, 'r') as input_file:
+        # skip header columns
+        input_file.readline()
+        count = 0
+        for line in input_file:
+            feature_values = line.strip().split(',')
+            redis_key = redis_key_prefix + feature_values[key_index]
+            redis_value = gen_redis_field_value_mapping(columns, feature_values)
+            pipe.hmset(redis_key, redis_value)
+            pipe.expire(redis_key, ttl)
+            count += 1
+            if not count % REDIS_PIPE_BATCH_SIZE:
+                pipe.execute()
+        # send the last data
+        pipe.execute()
+        print "Push data to redis succeed!\n"
 
 
 if __name__ == "__main__":
