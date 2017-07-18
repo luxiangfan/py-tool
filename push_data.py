@@ -20,7 +20,7 @@ import redis
 __author__ = 'luxiaolang'
 
 CONVERT_TO_CSV = True
-ZOOTOPIA_URL = "http://vpca-bdi-zootopia-mgr-1.vm.elenet.me:8080"
+ZOOTOPIA_URL = "http://alta1-bdi-zootopia-mgr-1.vm.elenet.me:8080"
 ES_PORT = "9200"
 KEY_NAME = "feature_key"
 REDIS_PIPE_BATCH_SIZE = 10000
@@ -109,21 +109,24 @@ def gen_es_config(data_path, columns, index, type, key_name, host, port):
                 separator => ','
                 columns => {1}
             }}
+            if [{2}] == '{3}' {{
+                drop {{}}
+            }}
             mutate {{
                 remove_field => ['path', 'host', 'message', '@timestamp', '@version']
             }}
         }}
         output {{
             elasticsearch {{
-                index => '{2}'
-                document_type => '{3}'
-                document_id => '%{{{4}}}'
-                hosts => '{5}:{6}'
+                index => '{4}'
+                document_type => '{5}'
+                document_id => '%{{{6}}}'
+                hosts => '{7}:{8}'
             }}
             stdout {{}}
         }}
     """
-    return config.format(data_path, str(columns), index, type, key_name, host, port)
+    return config.format(data_path, str(columns), columns[0], key_name, index, type, key_name, host, port)
 
 
 def push_data(data_path, feature_group_name, columns, key_name):
@@ -155,7 +158,7 @@ def do_push_es(data_path, columns, namespace, sub_namespace, key_name, host, por
         logging.info("Error while executing shell command " + sh_cmd)
         raise RuntimeError("Error while executing shell command" + sh_cmd)
     else:
-        print "Push data to es succeed!\n"
+        print "Push data to es done!\n"
 
 
 def do_push_redis(data_path, columns, namespace, sub_namespace, key_name, host, port, ttl=REDIS_DEFAULT_TTL):
@@ -180,7 +183,7 @@ def do_push_redis(data_path, columns, namespace, sub_namespace, key_name, host, 
                 pipe.execute()
         # send the last data
         pipe.execute()
-        print "Push data to redis succeed!\n"
+        print "Push data to redis done!\n"
 
 
 if __name__ == "__main__":
