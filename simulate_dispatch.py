@@ -81,7 +81,21 @@ def http_post(url, params):
     return urllib2.urlopen(url, urllib.urlencode(params)).read()
 
 
+def help_message():
+    return "usage: python simulate_dispatch.py team_id start_time end_time model_version [env]\n" \
+           "参数说明:\n" \
+           "\tteam_id\t\t站点id\t\trequired\n" \
+           "\tstart_time\t开始时间\trequired\n" \
+           "\tend_time\t结束时间\trequired\n" \
+           "\tmodel_version\t模型版本\trequired\n" \
+           "\tenv\t\t当前环境\toptional[alpha, alta, prod]\n"
+
+
 if __name__ == "__main__":
+    if sys.argv[1] == '-h' or sys.argv[1] == '-H':
+        print help_message()
+        exit(1)
+
     if len(sys.argv) < 5:
         print("arguments invalid")
         exit(1)
